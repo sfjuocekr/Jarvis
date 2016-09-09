@@ -11,15 +11,6 @@
 
 const unsigned int relaisPins[8] = {19, 18, 17, 16, 15, 5, 6, 7};
 
-const String strings[6] =
-{
-  "HTTP/1.1 200 OK",                        // 0
-  "Content-Type: application/json",         // 1
-  "Connection: close",                      // 2
-  "favicon",                                // 3
-  "relais",                                 // 4
-};
-
 
 ThreadController threadController = ThreadController();
 
@@ -28,12 +19,12 @@ Thread ethernetThread = Thread();
 Thread terminalThread = Thread();
 
 byte mac[] = {0xDE, 0xAD, 0xC0, 0xDE, 0x00, 0x01};
-const IPAddress ip(172, 16, 0, 2);
+const IPAddress ip(192, 168, 178, 2);
 EthernetServer server(80);
 
 DynamicJsonBuffer jsonBuffer;
 JsonObject& json = jsonBuffer.createObject();
-JsonArray& relais = json.createNestedArray(strings[4]);
+JsonArray& relais = json.createNestedArray("relais");
 
 BasicTerm terminal(&Serial);
 
@@ -96,7 +87,7 @@ boolean readRequest(EthernetClient& _client)
       _request = _request + String(_char);
           
       if (_char == '\n' && _blank)
-        return (_request.substring(5, 12) != strings[3]);
+        return (_request.substring(5, 12) != F("favicon"));
       else
         _blank = (_char == '\n') || !(_char != '\r');
     }
@@ -107,9 +98,9 @@ boolean readRequest(EthernetClient& _client)
 
 void writeResponse(EthernetClient& _client)
 {
-  _client.println(strings[0]);
-  _client.println(strings[1]);
-  _client.println(strings[2]);
+  _client.println(F("HTTP/1.1 200 OK"));
+  _client.println(F("Content-Type: application/json"));
+  _client.println(F("Connection: close"));
   _client.println();
 
   json.prettyPrintTo(_client);
@@ -145,32 +136,19 @@ void serialTerminal()
   
   uint16_t _key = terminal.get_key();
 
-
-  terminal.position(1, 29);
-  terminal.set_attribute(BT_NORMAL);
-  terminal.set_attribute(BT_BOLD);
-  terminal.set_color(BT_GREEN, BT_BLACK);
-  terminal.print(F("Jarvis Status Monitor"));
+  drawStats();
   
   if (latency <= 1000)
   {
-    terminal.position(2, 64);
+    terminal.position(79, 65);
     terminal.set_attribute(BT_NORMAL);
     terminal.print(F("Latency: "));
     
     terminal.set_attribute(BT_BOLD);
     terminal.print(latency);
-    terminal.print(F("ms"));
+    terminal.print(F(" ms"));
   }
-  
-  terminal.set_color(BT_WHITE, BT_BLACK);
-  terminal.position(4, 2);
-  terminal.set_attribute(BT_BOLD);
-  terminal.print(F("JSON data: "));
-  
-  terminal.set_attribute(BT_NORMAL);
-  json.printTo(terminal);
-   
+
   noInterrupts();
   
   switch(_key)
@@ -244,9 +222,39 @@ void clearTerminal()
       terminal.position(_row, _col);
       terminal.print(F(" "));
     }
-  }  
+  }
+
+  drawTerminal();
 }
 
+void drawTerminal()
+{
+  terminal.position(1, 29);
+  terminal.set_attribute(BT_NORMAL);
+  terminal.set_attribute(BT_BOLD);
+  terminal.set_color(BT_GREEN, BT_BLACK);
+  terminal.print(F("Jarvis Status Monitor"));
+  
+  terminal.position(4, 2);
+  terminal.set_attribute(BT_BOLD);
+  terminal.set_color(BT_WHITE, BT_BLACK);
+  terminal.print(F("JSON data: "));
+
+  terminal.position(79, 65);
+  terminal.set_attribute(BT_NORMAL);
+  terminal.print(F("Latency: "));
+  
+  terminal.position(79, 77);
+  terminal.set_attribute(BT_BOLD);
+  terminal.print(F(" ms"));
+}
+
+void drawStats()
+{
+  terminal.position(4, 13);
+  terminal.set_attribute(BT_NORMAL);
+  json.printTo(terminal);
+}
 
 void setupThread(ThreadController& _controller, Thread& _thread, unsigned int _interval, void (*_callback)(void))
 {
