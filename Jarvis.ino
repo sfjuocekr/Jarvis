@@ -6,43 +6,37 @@
 #include <SPI.h>
 #include <Ethernet.h>
 #include <ArduinoJson.h>
+#include <MemoryFree.h>
 
-#define DEBUG true
+boolean DEBUG = false;
 
 #define ROWS 24
 #define COLS 80
 
+#define OBJECTS 2
 #define RELAIS 8
-const unsigned int relaisPins[RELAIS] = {19, 18, 17, 16, 15, 5, 6, 7};
+const int BUFFERSIZE = (8 + 10 * OBJECTS) + (8 + 10 * RELAIS);
+const unsigned char relaisPins[RELAIS] = {19, 18, 17, 16, 15, 5, 6, 7};
+boolean relaisState[RELAIS] = {false, false, false, false, false, false, false, false};
 
-
-#define ITEMS 2
-const String menuItems[ITEMS] = {"Turn all ON", "Turn all OFF"};
-int menuPosition = 0;
-
+#define MENUY 1
+#define MENUX 59
+#define MENUITEMS 3
+const char* const menuItems[MENUITEMS] = {"Toggle debug", "Turn all ON", "Turn all OFF"};
 
 ThreadController threadController = ThreadController();
-
 Thread alarmsThread = Thread();
 Thread ethernetThread = Thread();
 Thread terminalThread = Thread();
 
-
-byte mac[] = {0xDE, 0xAD, 0xC0, 0xDE, 0x00, 0x01};
+static byte mac[6] = {0xDE, 0xAD, 0xC0, 0xDE, 0x00, 0x01};
 const IPAddress ip(172, 16, 0, 2);
 EthernetServer server(80);
 
-DynamicJsonBuffer jsonBuffer;
-JsonObject& json = jsonBuffer.createObject();
-JsonArray& relais = json.createNestedArray("relais");
-
 BasicTerm terminal(&Serial);
+uint32_t currentMillis;
 
-uint32_t current;
-uint32_t last;
-uint32_t latency;
-
-boolean statsDrawn = false;
+unsigned char menuPosition = 0;
 
 
 void loop()
@@ -56,29 +50,26 @@ void alarmsDelay()
 }
 
 
-void setPin(unsigned int _pin, boolean _state)
+void setPin(unsigned char _pin, boolean _state, boolean _redraw)
 {
-  JsonArray& _array = relais[_pin];
-             _array[1] = int(_state);
-
-  relais[_pin] = _array;
+  relaisState[_pin] = _state;
+  digitalWrite(relaisPins[_pin], _state ? LOW : HIGH);
   
-  digitalWrite(_array[0], _state ? LOW : HIGH);
-  
-  statsDrawn = false;
+  if (_redraw)
+    drawStats();
 }
 
 void setPins(boolean _state)
 {
-  for (unsigned int _i = 0; _i < relais.size(); _i++)
-    setPin(_i, _state);
+  for (unsigned char _relais = 0; _relais < RELAIS; _relais++)
+    setPin(_relais, _state, false);
+  
+  drawStats();
 }
 
-void togglePin(unsigned int _pin)
+void togglePin(unsigned char _pin)
 {
-  JsonArray& _array = relais[_pin];
-
-  setPin(_pin, !boolean(_array[1]));
+  setPin(_pin, !boolean(relaisState[_pin]), true);
 }
 
 
@@ -93,7 +84,7 @@ void togglePin(unsigned int _pin)
 
 boolean readRequest(EthernetClient& _client)
 {
-  String _request = "";
+  String _request;
   boolean _blank = true;
   
   while (_client.connected())
@@ -102,7 +93,7 @@ boolean readRequest(EthernetClient& _client)
     {
       char _char = _client.read();
 
-      _request = _request + String(_char);
+      _request = _request + _char;
           
       if (_char == '\n' && _blank)
         return (_request.substring(5, 12) != "favicon");
@@ -121,7 +112,15 @@ void writeResponse(EthernetClient& _client)
   _client.println(F("Connection: close"));
   _client.println();
 
-  json.prettyPrintTo(_client);
+  StaticJsonBuffer<BUFFERSIZE> _jsonBuffer;
+  
+  JsonObject& _json = _jsonBuffer.createObject();
+  JsonObject& _relaisData = _json.createNestedObject("relais");
+  
+  for (unsigned char _relais = 0; _relais < RELAIS; _relais++)
+    _relaisData[String(_relais)] = relaisState[_relais];
+  
+  _json.printTo(_client);
 }
 
 void ethernetServer()
@@ -130,78 +129,44 @@ void ethernetServer()
   
   if (_client)
   {
+    noInterrupts();
+    
     if (readRequest(_client))
       writeResponse(_client);
       
     _client.stop();
+    
+    interrupts();
   }
 }
 
 
 void serialTerminal()
 {
-  last = current;
-  current  = millis();
-  latency = current - last;
+  uint32_t last = currentMillis;
+  currentMillis  = millis();
+  drawLatency(currentMillis - last);
   
-  uint16_t _key = terminal.get_key();
+  //uint16_t _key = terminal.get_key();
 
-  if (!statsDrawn)
-    drawStats();
+
+  handleKeys(terminal.get_key());
+
+  if (DEBUG)
+  {
+    terminal.position(24, 0);
+    terminal.set_attribute(BT_NORMAL);
+    terminal.print(BUFFERSIZE);
   
-  drawLatency();
+    terminal.position(24, 4);
+    terminal.print(freeMemory());
+  }
+}
 
-  terminal.position(24, 0);
-  terminal.set_attribute(BT_NORMAL);
-  terminal.print(menuPosition);
-
+void handleKeys(uint16_t _key)
+{
   switch(_key)
   {
-    case ' ':
-      /* Spacebar: all OFF */
-      setPins(false);
-      break;
-      
-    case '1':
-      /* 1: toggle */
-      togglePin(0);
-      break;
-      
-    case '2':
-      /* 2: toggle */
-      togglePin(1);
-      break;
-      
-    case '3':
-      /* 3: toggle */
-      togglePin(2);
-      break;
-      
-    case '4':
-      /* 4: toggle */
-      togglePin(3);
-      break;
-      
-    case '5':
-      /* 5: toggle */
-      togglePin(4);
-      break;
-      
-    case '6':
-      /* 6: toggle */
-      togglePin(5);
-      break;
-      
-    case '7':
-      /* 7: toggle */
-      togglePin(6);
-      break;
-      
-    case '8':
-      /* 8: toggle */
-      togglePin(7);
-      break;
-      
     case '\f':
       /* Ctrl-L: redraw screen */
       clearTerminal();
@@ -212,10 +177,23 @@ void serialTerminal()
       switch (menuPosition)
       {
         case 0:
+          if (DEBUG)
+          {
+            terminal.set_color(BT_BLACK, BT_WHITE);
+            terminal.position(24, 0);
+            
+            for (unsigned char _col = 1; _col < 10; _col++)
+              terminal.print(F(" "));
+          }
+          
+          DEBUG = !DEBUG;
+          break;
+
+        case 1:
           setPins(true);
           break;
           
-        case 1:
+        case 2:
           setPins(false);
           break;
       }
@@ -229,8 +207,13 @@ void serialTerminal()
 
     case BT_KEY_DOWN:
       /* DOWN: menu down */
-      if (menuPosition < ITEMS - 1)
+      if (menuPosition < MENUITEMS - 1)
         updateMenu(menuPosition + 1);
+      break;
+    
+    default:
+      if (_key >= 49 && _key <= 56)
+        togglePin(_key - 49);
       break;
   }
 }
@@ -238,16 +221,17 @@ void serialTerminal()
 void clearTerminal()
 {
   terminal.cls();
-
+  terminal.show_cursor(false);
+  
   terminal.position(0, 0);
   terminal.set_attribute(BT_NORMAL);
   terminal.set_color(BT_BLACK, BT_WHITE);
   
-  for (int _row = 0; _row < ROWS + 1; _row++)
+  for (unsigned char _row = 0; _row < ROWS + 1; _row++)
   {
     terminal.position(_row, 0);
     
-    for (int _col = 0; _col < COLS + 1; _col++)
+    for (unsigned char _col = 0; _col < COLS + 1; _col++)
       terminal.print(F(" "));
   }
 
@@ -256,33 +240,49 @@ void clearTerminal()
 
 void drawTerminal()
 {
-  terminal.position(1, 29);
+  terminal.position(1, 2);
   terminal.set_attribute(BT_NORMAL);
   terminal.set_attribute(BT_BOLD);
-  terminal.set_color(BT_GREEN, BT_BLACK);
+  terminal.set_attribute(BT_UNDERLINE);
+  terminal.set_color(BT_YELLOW, BT_BLACK);
   terminal.print(F("Jarvis Status Monitor"));
   
-  terminal.position(4, 2);
+  terminal.set_attribute(BT_NORMAL);
   terminal.set_attribute(BT_BOLD);
   terminal.set_color(BT_WHITE, BT_BLACK);
+  terminal.position(24, 67);
+  terminal.print(F("Latency:"));
+
+  terminal.position(7, 2);
+  terminal.set_color(BT_CYAN, BT_BLACK);
   terminal.print(F("Relais:"));
 
-  terminal.set_attribute(BT_NORMAL);
-
-  for (int _relais = 0; _relais < RELAIS; _relais++)
+  terminal.set_color(BT_WHITE, BT_BLACK);
+  
+  for (unsigned char _relais = 0; _relais < RELAIS; _relais++)
   {
-    terminal.position(4 + _relais, 11);
-    
+    terminal.set_attribute(BT_BOLD);
+    terminal.position(7 + _relais, 11);
     terminal.print(_relais + 1);
+    
+    terminal.set_attribute(BT_NORMAL);
     terminal.print(F(" = "));
   }
   
+  drawStats();
   drawMenu();
   updateMenu(menuPosition);
+  
+  /*terminal.position(24, 16);
 
-  terminal.position(24, 65);
-  terminal.set_attribute(BT_NORMAL);
-  terminal.print(F("Latency:"));
+  for (unsigned char _color = 0; _color < 7; _color++)
+  {
+    terminal.set_attribute(BT_NORMAL);
+    terminal.set_color(_color, BT_BLACK);
+    terminal.print(_color);
+    terminal.set_attribute(BT_BOLD);
+    terminal.print(_color);
+  }*/
 }
 
 void drawStats()
@@ -290,25 +290,38 @@ void drawStats()
   terminal.set_attribute(BT_NORMAL);
   terminal.set_attribute(BT_BOLD);
   
-  for (int _relais = 0; _relais < RELAIS; _relais++)
+  for (unsigned char _relais = 0; _relais < RELAIS; _relais++)
   {
-    terminal.position(4 + _relais, 15);
+    terminal.position(7 + _relais, 15);
 
-    if (json["relais"][_relais][1] == 0)
+    if (relaisState[_relais] == 0)
+    {
+      terminal.set_color(BT_RED, BT_BLACK);
       terminal.print(F("OFF"));
-    else
+    }
+    else if (relaisState[_relais] == 1)
+    {
+      terminal.set_color(BT_GREEN, BT_BLACK);
       terminal.print(F(" ON"));
+    }
+    else
+    {
+      terminal.set_attribute(BT_BLINK);
+      terminal.set_color(BT_MAGENTA, BT_BLACK);
+      terminal.print(F("ERR"));
+    }
   }
-
-  statsDrawn = true;
 }
 
-void drawLatency()
+void drawLatency(unsigned char _latency)
 {
-  String _print = String(latency) + " ms";
-  int _printSize = _print.length();
+  if (_latency > 999)
+    return;
+    
+  String _print = String(_latency) + " ms";
+  unsigned char _printSize = _print.length();
   
-  for (int _col = 0; _col < COLS - (72 + _printSize); _col++)
+  for (unsigned char _col = 0; _col < COLS - (74 + _printSize); _col++)
     _print = " " + _print;
 
   _printSize = _print.length();
@@ -316,41 +329,73 @@ void drawLatency()
   terminal.position(24, COLS - _printSize + 1);
   terminal.set_attribute(BT_NORMAL);
   terminal.set_attribute(BT_BOLD);
+  
+  if (_latency < 25)
+    terminal.set_color(BT_GREEN, BT_BLACK);
+  else if (_latency < 50)
+    terminal.set_color(BT_YELLOW, BT_BLACK);
+  else
+    terminal.set_color(BT_RED, BT_BLACK);
+  
   terminal.print(_print);
 }
 
 void drawMenu()
 {
-  terminal.set_attribute(BT_NORMAL);
-  
-  for (int _item = 0; _item < ITEMS; _item++)
-  {
-    terminal.position(4 + _item, 60);
+  terminal.position(MENUY, MENUX);
 
+  terminal.set_attribute(BT_NORMAL);
+  terminal.set_color(BT_BLACK, BT_WHITE);
+  terminal.print(F("======[ "));
+
+  terminal.set_attribute(BT_BOLD);
+  terminal.set_color(BT_YELLOW, BT_WHITE);
+  terminal.print(F("MENU"));
+
+  terminal.set_attribute(BT_NORMAL);
+  terminal.set_color(BT_BLACK, BT_WHITE);
+  terminal.print(F(" ]======"));
+
+  for (unsigned char _item = 0; _item < MENUITEMS + 2; _item++)
+  {
+    terminal.position(MENUY + 1 + _item, MENUX);
+    terminal.print(F("|                  |"));
+  }
+
+  terminal.position(MENUY + 1 + MENUITEMS + 2, MENUX);
+  terminal.print(F("===================="));
+
+  terminal.set_color(BT_WHITE, BT_BLACK);
+
+  for (unsigned char _item = 0; _item < MENUITEMS; _item++)
+  {
+    terminal.position(MENUY + 2 + _item, MENUX + 2);
+    terminal.print(F("                "));
+
+    terminal.position(MENUY + 2 + _item, MENUX + 2);
     terminal.print(menuItems[_item]);
   }
 }
 
-void updateMenu(int _position)
+void updateMenu(unsigned char _position)
 {
   terminal.set_attribute(BT_NORMAL);
 
   if (_position != menuPosition)
   {
-    terminal.position(4 + menuPosition, 60);
+    terminal.position(MENUY + 2 + menuPosition, MENUX + 2);
     terminal.print(menuItems[menuPosition]);
   }
   
-  terminal.position(4 + _position, 60);
+  terminal.position(MENUY + 2 + _position, MENUX + 2);
   terminal.set_attribute(BT_BOLD);
-  terminal.set_attribute(BT_UNDERLINE);
   terminal.print(menuItems[_position]);
   
   menuPosition = _position;
 }
 
 
-void setupThread(ThreadController& _controller, Thread& _thread, unsigned int _interval, void (*_callback)(void))
+void setupThread(ThreadController& _controller, Thread& _thread, unsigned char _interval, void (*_callback)(void))
 {
   _thread.enabled = true;
   _thread.setInterval(_interval);
@@ -373,21 +418,12 @@ void setup()
   Ethernet.begin(mac, ip);
   server.begin();
 
-  for (int _i = 0; _i < RELAIS; _i++)
-  {
-    pinMode(relaisPins[_i], OUTPUT);
-    
-    JsonArray& _array = jsonBuffer.createArray();
-               _array.add(relaisPins[_i]);
-               _array.add(0);
-    
-    relais.add(_array);
-  }
+  for (unsigned char _relais = 0; _relais < RELAIS; _relais++)
+    pinMode(relaisPins[_relais], OUTPUT);
   
   setPins(false);
   
   terminal.init();
-  terminal.show_cursor(false);
 
   clearTerminal();
   
@@ -397,5 +433,5 @@ void setup()
   
   setupAlarms();
 
-  current = now();
+  currentMillis = now();
 }
